@@ -1,0 +1,19 @@
+{
+  "pipeline_source_sha256": "f57c243822fdae9692f8db1f77bffc3521bf3a5fc99aa969b3b033f4b8531e7f",
+  "same_code_as_sample1": true,
+  "same_settings_as_sample1": true,
+  "patients_disjoint_from_sample1": true,
+  "sample_output_root": "/Users/gobus/Downloads/ALL_FA_REVISED_sample2",
+  "images": 1691,
+  "visits": 44,
+  "source_archives_match_download_manifest": true,
+  "unique_output_paths": true,
+  "copied_jpeg_count_matches": true,
+  "review_contact_sheets": 44,
+  "pipeline_validation": {
+    "row_count_matches_input": true,
+    "output_paths_unique": true,
+    "source_zip_crc_checked": true,
+    "jpeg_sha256_readback_verified": true
+  }
+}

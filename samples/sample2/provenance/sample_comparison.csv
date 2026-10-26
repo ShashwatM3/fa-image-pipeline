@@ -1,0 +1,3 @@
+sample,patients,visits,images,readable_timers,uncertain_eyes,unstaged_fa,estimated_phases,decode_errors,elapsed_seconds,pipeline_source_sha256
+1,12,57,2050,1216,962,207,305,0,493.35,f57c243822fdae9692f8db1f77bffc3521bf3a5fc99aa969b3b033f4b8531e7f
+2,12,44,1691,615,612,90,727,0,287.18,f57c243822fdae9692f8db1f77bffc3521bf3a5fc99aa969b3b033f4b8531e7f

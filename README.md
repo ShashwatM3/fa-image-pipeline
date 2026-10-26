@@ -1,6 +1,10 @@
 # ALL FA processing pipeline
 
-`fa_pipeline.py` is a standalone Python entry point. It reads local visit ZIPs, labels every JPEG, applies reviewed corrections, and builds `ALL_FA_REVISED`. It does not download from Box, upload to Box, attach diagnoses, choose training splits, remove frames, or prepare images for model training. The earlier `../fa_label.py` remains a separate prototype and is not imported.
+`fa_pipeline.py` is a standalone Python entry point. It reads local visit ZIPs, labels every JPEG, applies reviewed corrections, and builds `ALL_FA_REVISED`. It does not download from Box, upload to Box, attach diagnoses, choose training splits, remove frames, or prepare images for model training. The earlier labeling prototype is separate and is not included in this repository or imported by this pipeline.
+
+## Included sample
+
+[Sample 2](samples/sample2/README.md) contains browsable baseline tables, correction files, and an explanation of pipeline performance. Its full raw images and processed output are downloadable from the [Sample 2 baseline release](https://github.com/ShashwatM3/fa-image-pipeline/releases/tag/sample2-baseline-v1.0.0). The sample README explains how to download and unpack them.
 
 ## Running the pipeline
 

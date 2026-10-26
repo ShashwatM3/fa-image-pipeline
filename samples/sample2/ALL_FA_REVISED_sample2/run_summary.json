@@ -1,0 +1,77 @@
+{
+  "pipeline_version": "1.0.0",
+  "created_at_utc": "2026-10-23T22:59:06.825275+00:00",
+  "input_root": "/Users/gobus/Downloads/ALL_FA_sample2",
+  "output_root": "/Users/gobus/Downloads/ALL_FA_REVISED_sample2",
+  "corrections_root": "/Users/gobus/Downloads/ALL_FA_REVISED_sample2.corrections",
+  "mode": "full",
+  "partial_run": false,
+  "patients": 12,
+  "visits": 44,
+  "images": 1691,
+  "source_image_bytes": 1748541401,
+  "images_materialized": true,
+  "readable_timers": 615,
+  "uncertain_eyes": 612,
+  "decode_errors": 0,
+  "modalities": {
+    "color": 124,
+    "autofluorescence": 135,
+    "FA-dark": 30,
+    "FA": 1402
+  },
+  "phase_sources": {
+    "modality": 259,
+    "darkness_heuristic": 30,
+    "timer": 585,
+    "inferred-order": 727,
+    "unresolved": 90
+  },
+  "flags": {
+    "eye_uncertain": 612,
+    "coverage_proxy_high": 1149,
+    "near_black": 207,
+    "phase_estimated": 727,
+    "timer_ambiguous": 47,
+    "atypical_eye_run_count": 1146,
+    "phase_unresolved": 90,
+    "modality_ambiguous": 36,
+    "dark_frame_after_fa": 42,
+    "timer_order_conflict": 55,
+    "large_id_gap_order_unreliable": 34,
+    "suspected_reimport": 74
+  },
+  "settings": {
+    "pre_dye_seconds": 5.0,
+    "early_end_seconds": 180.0,
+    "mid_end_seconds": 480.0,
+    "max_timer_seconds": 3600.0,
+    "near_black_mean": 7.0,
+    "color_chroma_threshold": 5.0,
+    "modality_ambiguity_margin": 0.5,
+    "disc_min_strength": 1.0,
+    "disc_x_min": 0.35,
+    "disc_x_max": 0.68,
+    "disc_center_margin": 0.03,
+    "coverage_flag_threshold": 0.25,
+    "coverage_bright_threshold": 0.72,
+    "coverage_dark_threshold": 0.18,
+    "coverage_texture_threshold": 0.1,
+    "unreliable_id_gap": 50000,
+    "ocr_timeout_seconds": 10.0,
+    "reserve_disk_bytes": 200000000
+  },
+  "tesseract": "/opt/homebrew/bin/tesseract",
+  "elapsed_seconds": 287.18,
+  "validation": {
+    "row_count_matches_input": true,
+    "output_paths_unique": true,
+    "source_zip_crc_checked": true,
+    "jpeg_sha256_readback_verified": true
+  },
+  "limitations": [
+    "Image labels are heuristics, not clinical ground truth",
+    "The coverage score is a brightness/texture proxy, not measured eyelid area",
+    "The timing boundaries are provisional user-selected settings"
+  ]
+}
