@@ -1,0 +1,28 @@
+{
+  "pipeline_source_sha256": "f57c243822fdae9692f8db1f77bffc3521bf3a5fc99aa969b3b033f4b8531e7f",
+  "unit_tests_passed": 26,
+  "initial_timed_visit_regression": {
+    "frames": 33,
+    "accepted_clock_readings": 27,
+    "accepted_readings_matching_reference": 27,
+    "ambiguous_readings_queued": 2
+  },
+  "sample_output_root": "/Users/gobus/Downloads/ALL_FA_REVISED_sample1",
+  "images": 2050,
+  "visits": 57,
+  "source_archives_match_download_manifest": true,
+  "unique_output_paths": true,
+  "copied_jpeg_count_matches": true,
+  "review_contact_sheets": 57,
+  "pipeline_validation": {
+    "row_count_matches_input": true,
+    "output_paths_unique": true,
+    "source_zip_crc_checked": true,
+    "jpeg_sha256_readback_verified": true
+  },
+  "sample_metadata": {
+    "square_4000x4000": 1960,
+    "rectangular_3900x3072": 90,
+    "images_with_exif": 0
+  }
+}
