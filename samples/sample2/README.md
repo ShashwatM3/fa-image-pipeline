@@ -12,7 +12,7 @@ The baseline ran on October 23, 2026 with pipeline version **1.0.0**, the same s
 
 The [Sample 2 baseline release](https://github.com/ShashwatM3/fa-image-pipeline/releases/tag/sample2-baseline-v1.0.0) contains two downloadable attachments. `sample2-raw.tar` holds the original 44 visit ZIPs, and `sample2-outputs.tar` holds all 1,691 processed JPEG copies, the 44 contact sheets, the review page, tables, and correction files. Both archives contain this README and unpack into the same `sample2/` folder. The `SHA256SUMS` file in this directory records the archive checksums. The raw ZIPs total 1,187,616,364 bytes, and the original full processed output totals 1,761,743,430 bytes before tar packaging.
 
-The repository keeps the tables, correction files, and provenance here so they can be browsed without downloading gigabytes of images. The complete original archive also remains in [Box SAMPLE 2](https://ucdavis.app.box.com/folder/430492686598). GitHub access is restricted by the private repository, and Box access is controlled separately.
+The repository keeps the tables, correction files, and provenance here so they can be browsed without downloading gigabytes of images. The complete original archive also remains in [Box SAMPLE 2](https://ucdavis.app.box.com/folder/430492686598). The GitHub repository and these sample downloads are public. Box access is controlled separately.
 
 After both release attachments are downloaded, the following commands unpack them together:
 
