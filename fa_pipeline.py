@@ -28,7 +28,7 @@ from typing import Any
 import uuid
 import zipfile
 
-VERSION = "1.1.0"
+VERSION = "1.1.1"
 OWNER = "all-fa-pipeline-v1"
 MARKER = ".fa_pipeline.json"
 
@@ -344,10 +344,12 @@ def prepare_dates(visits: list[Visit], corrections: dict[str, dict]) -> None:
             }
     groups = collections.Counter((v.patient, v.date) for v in visits)
     for v in visits:
-        if v.date and groups[(v.patient, v.date)] > 1:
-            v.flags.add("multiple_archives_same_date")
-        # Keep the source hierarchy and visit name, replacing only the ZIP suffix.
-        v.output_dir = PurePosixPath(v.source).with_suffix("").as_posix()
+        folder = v.date or "date_unknown"
+        if not v.date or groups[(v.patient, v.date)] > 1:
+            folder += "__v" + v.key[:8]
+            if v.date:
+                v.flags.add("multiple_archives_same_date")
+        v.output_dir = f"{v.patient}/{folder}"
 
 
 def parse_timer(text: str, settings: Settings) -> float | None:
@@ -632,13 +634,24 @@ def assign_phases(rows: list[dict], visit: Visit, settings: Settings, labels: di
 
 
 def output_relative(row: dict, visit: Visit, count: int) -> str:
-    member = PurePosixPath(row["member_path"])
-    duplicates = sum(PurePosixPath(info.filename).name.casefold() == member.name.casefold()
-                     for _, info in visit.members)
-    name = member.name
-    if duplicates > 1:
-        name = f"{member.stem}__member{row['member_index']}{member.suffix}"
-    return f"{visit.output_dir}/{name}"
+    eye = row["eye"] if row["eye"] in ("OD", "OS") else "eye_uncertain"
+    mod, phase = row["modality"], row["phase"]
+    if mod == "color":
+        category = "1_color"
+    elif mod == "autofluorescence":
+        category = "2_autofluorescence"
+    elif phase == "pre-dye":
+        category = "3_FA_pre-dye"
+    elif mod in ("FA", "FA-dark") and phase in ("early", "mid", "late"):
+        category = {"early": "4_FA_early", "mid": "5_FA_mid", "late": "6_FA_late"}[phase]
+        if row["phase_estimated"]:
+            category += "_estimated"
+    else:
+        category = "7_FA_unstaged" if mod in ("FA", "FA-dark") else "7_modality_uncertain"
+    sequence = f"{row['seq']:0{max(2, len(str(count)))}d}"
+    timer = "" if row["timer_s"] is None else f"_t{int(row['timer_s']):04d}s"
+    image_id = str(row["image_id"]) if row["image_id"] != "" else "unknown_" + row["image_key"][:8]
+    return f"{visit.output_dir}/{eye}/{category}/{sequence}{timer}_{image_id}.jpg"
 
 
 def update_review_queues(rows: list[dict], eyes: dict[str, dict], labels: dict[str, dict]) -> None:
@@ -932,7 +945,7 @@ def run_pipeline(source: Path, output: Path, corrections: Path, settings: Settin
         if not tables_only and sum(p.is_file() for p in staging.rglob("*") if p.suffix.lower() in (".jpg", ".jpeg")) != expected_count:
             raise PipelineError("Output file count mismatch")
         records_staging = staging / "_run_records"
-        write_csv(records_staging / "fa_images.csv", IMAGE_COLS, all_rows)
+        write_csv(staging / "fa_images.csv", IMAGE_COLS, all_rows)
         write_csv(records_staging / "fa_visits.csv", VISIT_COLS, visit_rows)
         review_counts = write_review_csvs(staging / "review", all_rows)
         summary = {

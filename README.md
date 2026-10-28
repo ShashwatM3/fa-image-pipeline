@@ -1,24 +1,33 @@
 # ALL FA processing pipeline
 
-`fa_pipeline.py` reads patient visit ZIPs, labels the images, and copies every original JPEG into an unzipped visit folder. Version **1.1.0** produces the simple layout below. The image-analysis rules are unchanged from 1.0.1.
+`fa_pipeline.py` reads patient visit ZIPs, labels every image, and copies every original JPEG into the normalized **patient → visit date → eye → image type / FA stage** hierarchy. Version **1.1.1** keeps this useful structure and the root `fa_images.csv`. Only the review presentation changes: `review` contains category CSVs instead of collages or HTML.
 
 ```text
 ALL_FA_REVISED/
-  Patient 1/
-    2021-06-22/
-      1234567.jpg
-      1234568.jpg
-  Patient 12 No Timestamp/
-    <original visit name>/
-      <original image name>.jpg
+  fa_images.csv
+  Patient 13/
+    2021-05-04/
+      OD/
+        1_color/
+        2_autofluorescence/
+        3_FA_pre-dye/
+        4_FA_early/
+        5_FA_mid/
+        6_FA_late/
+      OS/
+        <same categories when populated>
+      eye_uncertain/
+        <image categories when the eye is unresolved>
   review/
     eye_unknown.csv
     phase_unknown.csv
     phase_estimated.csv
-    ...other categories that actually have cases...
+    <other populated review categories>.csv
 ```
 
-Patient names, visit names and original image names are preserved. Each source ZIP becomes a folder at the same relative location without `.zip`. The existing extra directory around Patient 11's September 2021 ZIP is therefore also preserved. Images sit directly inside their visit folder. There are no eye/phase subfolders, collages, HTML pages, logs or metadata tables inside the dataset. If a ZIP contains repeated image basenames, a deterministic `__member<archive index>` suffix prevents overwriting either image. The source member path and index remain in the records.
+Patient directories use `Patient N`, and visit directories use normalized ISO dates. Original names and notes remain in `fa_images.csv`. An unparsed date gets `date_unknown__v<key>`; multiple archives with the same patient/date get distinct `__v<key>` suffixes. Empty stage folders are not created. Order-estimated early/mid/late folders retain the `_estimated` suffix; unstaged FA remains in `7_FA_unstaged`, and unknown modality in `7_modality_uncertain`.
+
+Image filenames retain the pipeline's sequence number, accepted timer when available, and source image ID, for example `01_t0028s_3042549.jpg`. The table maps every original ZIP member to its output path and hash. Every original JPEG byte is retained. There are no collage images or HTML pages in the dataset. Logs and supporting run records live outside it.
 
 ## Running it
 
@@ -61,11 +70,11 @@ Only categories with cases are written. The full dataset currently has 11 popula
 
 A labeller can fill the appropriate `confirmed_*` column and rerun the pipeline. Values are: `confirmed_eye` = `OD` or `OS`; `confirmed_modality` = `color`, `autofluorescence`, `FA`, `FA-dark` or `unknown`; `confirmed_phase` = `pre-dye`, `early`, `mid`, `late` or `unstaged`; `confirmed_timer_s` = seconds, including decimals; `confirmed_date` = `YYYY-MM-DD`. A date decision applies to the entire source ZIP. Blank means no decision. Conflicting entries for the same image/visit are rejected. Fingerprint and source columns must remain intact. The pipeline checks those fingerprints before applying decisions.
 
-Confirmed decisions persist in the run records even after a resolved image disappears from its review category. Review CSVs are regenerated, so they are forms for the listed `confirmed_*` fields, not a place for extra notes or new columns. Quality categories request human inspection; the pipeline does not automatically discard images. Reviewers should record any dataset inclusion/exclusion decisions separately for the ML training workflow. A confident but wrong prediction can also be corrected using the internal correction tables and its key/hash from `run/fa_images.csv`.
+Confirmed decisions persist in the run records even after a resolved image disappears from its review category. Review CSVs are regenerated, so they are forms for the listed `confirmed_*` fields, not a place for extra notes or new columns. Quality categories request human inspection; the pipeline does not automatically discard images. Reviewers should record any dataset inclusion/exclusion decisions separately for the ML training workflow. A confident but wrong prediction can also be corrected using the internal correction tables and its key/hash from `ALL_FA_REVISED/fa_images.csv`.
 
 ## What the records are for
 
-`PIPELINE/RUN_RECORDS` in the example command holds the complete label table `run/fa_images.csv`, visit table `run/fa_visits.csv`, summary `run/run_summary.json`, ownership markers and persistent correction state. These are pipeline records outside the image dataset. The model's labels are in `run/fa_images.csv`; its `output_relpath` column points to each image. The image folder alone does not provide training targets.
+`PIPELINE/RUN_RECORDS` in the example command holds the visit table `run/fa_visits.csv`, summary `run/run_summary.json`, ownership markers and persistent correction state. These are pipeline records outside the image dataset. The model's labels are in **`ALL_FA_REVISED/fa_images.csv`**; its `output_relpath` column points to each image in the date/eye/stage hierarchy.
 
 The three internal correction tables preserve the earlier interface: `date_corrections.csv` (`confirmed` = ISO date, or `yes` to approve the suggestion), `eye_corrections.csv` (`confirmed` = OD/OS), and `label_corrections.csv` (`confirmed_modality`, `confirmed_phase`, `confirmed_timer_s`). A labeller handling the flagged cases can use the review CSVs instead. Do not enter contradictory decisions in different copies of the dataset; download the edited review files before a local rerun.
 
@@ -89,10 +98,10 @@ This is a labeling and organization pipeline, not a clinically validated trainin
 
 ## Existing runs
 
-Sample 1 processed 12 patients, 57 visits and 2,050 images. Sample 2 processed 12 different patients, 44 visits and 1,691 images. [Sample 2's README](samples/sample2/README.md) and [v1.0.0 release](https://github.com/ShashwatM3/fa-image-pipeline/releases/tag/sample2-baseline-v1.0.0) preserve that historical baseline, including its older folder layout. Those archived sample files have not been rewritten to v1.1.0.
+Sample 1 processed 12 patients, 57 visits and 2,050 images. Sample 2 processed 12 different patients, 44 visits and 1,691 images. [Sample 2's README](samples/sample2/README.md) and [v1.0.0 release](https://github.com/ShashwatM3/fa-image-pipeline/releases/tag/sample2-baseline-v1.0.0) preserve that historical baseline, including its older folder layout. Those archived sample files retain their original review pages and contact sheets; the current pipeline produces CSV-only review.
 
 The full v1.0.1 run processed **101 patients, 285 visits and 9,992 images**, preserving all original JPEG bytes with zero decode errors. All 3,741 predictions from the two samples matched their baselines. It left 4,190 eyes unresolved, 1,143 FA frames unstaged and 3,603 phases estimated from order. These are overlapping review counts, not accuracy measurements.
 
 The original ZIPs total 7.19 GB and their JPEGs total 10.45 GB. That full run took 4.9 minutes to download/check, 25.2 minutes to process, and 70.8 minutes to upload and verify the previous layout. These measurements depend on the laptop, network and folder layout.
 
-The [Box archive](https://ucdavis.app.box.com/folder/431763249246) holds the [full revised dataset](https://ucdavis.app.box.com/folder/431763330844). The v1.1.0 reorganization retains those predictions, verifies all source ZIP and output JPEG hashes, and changes paths and review reports without rerunning OCR. Original All FA remains unchanged. Box access is separate from this public code repository.
+The [Box archive](https://ucdavis.app.box.com/folder/431763249246) holds the [full revised dataset](https://ucdavis.app.box.com/folder/431763330844). The v1.1.1 update retains the original date/eye/stage layout, filenames and predictions, and replaces review pages and collages with category CSVs. The intermediate flat-layout change was stopped and reversed. No new OCR analysis was needed. Original All FA remains unchanged. Box access is separate from this public code repository.
