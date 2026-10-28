@@ -2,7 +2,7 @@
 """Build ALL_FA_REVISED from local Patient N/<visit>.zip exports.
 
 The JPEG payloads are never re-encoded. Labels are provisional image heuristics;
-manual corrections are kept separately from the replaceable output directory.
+review CSVs identify problems; run records are kept outside the image dataset.
 Run `python3 fa_pipeline.py --help` for the command line interface.
 """
 from __future__ import annotations
@@ -13,7 +13,6 @@ import csv
 import dataclasses
 import datetime as dt
 import hashlib
-import html
 import io
 import json
 import math
@@ -29,7 +28,7 @@ from typing import Any
 import uuid
 import zipfile
 
-VERSION = "1.0.1"
+VERSION = "1.1.0"
 OWNER = "all-fa-pipeline-v1"
 MARKER = ".fa_pipeline.json"
 
@@ -209,7 +208,10 @@ def validate_paths(source: Path, output: Path, corrections: Path) -> None:
             raise PipelineError(f"Output exists and is not a directory: {output}")
         if any(output.iterdir()):
             try:
-                marker = json.loads((output / MARKER).read_text())
+                marker_path = output / MARKER if (output / MARKER).exists() else corrections / "run" / MARKER
+                marker = json.loads(marker_path.read_text())
+                if marker_path != output / MARKER and marker.get("output_root") != str(output):
+                    raise PipelineError("Run records belong to another output directory")
             except (OSError, ValueError) as e:
                 raise PipelineError(f"Refusing to replace an unowned output directory: {output}") from e
             if marker.get("owner") != OWNER or marker.get("input_root") != str(source):
@@ -342,12 +344,10 @@ def prepare_dates(visits: list[Visit], corrections: dict[str, dict]) -> None:
             }
     groups = collections.Counter((v.patient, v.date) for v in visits)
     for v in visits:
-        folder = v.date or "date_unknown"
-        if not v.date or groups[(v.patient, v.date)] > 1:
-            folder += "__v" + v.key[:8]
-            if v.date:
-                v.flags.add("multiple_archives_same_date")
-        v.output_dir = f"{v.patient}/{folder}"
+        if v.date and groups[(v.patient, v.date)] > 1:
+            v.flags.add("multiple_archives_same_date")
+        # Keep the source hierarchy and visit name, replacing only the ZIP suffix.
+        v.output_dir = PurePosixPath(v.source).with_suffix("").as_posix()
 
 
 def parse_timer(text: str, settings: Settings) -> float | None:
@@ -504,7 +504,7 @@ def analyze_image(payload: bytes, settings: Settings, tesseract: str | None) -> 
         "color_chroma": round(chroma, 6), "vessel_polarity": round(polarity, 6),
         "near_black": near_black, "coverage_score": score, "coverage_flag": covered,
         "coverage_method": "peripheral_brightness_texture_proxy_v1", "error": "", "flags": flags,
-    }, cv2.resize(small, (220, 220), interpolation=cv2.INTER_AREA)
+    }, None
 
 
 def validate_correction_values(eyes: dict[str, dict], labels: dict[str, dict], settings: Settings) -> None:
@@ -625,30 +625,20 @@ def assign_phases(rows: list[dict], visit: Visit, settings: Settings, labels: di
                 raise PipelineError(f"A phase correction requires FA or FA-dark modality: {row['image_key']}")
             phase, source, estimated = manual, "manual", timer is None and manual in ("early", "mid", "late")
             row["flags"].discard("phase_unresolved")
+            row["flags"].discard("phase_estimated")
         row.update(phase=phase, phase_source=source, phase_estimated=estimated, order_reliable=order_reliable)
         row["flags"].update(visit.flags)
     return len(runs)
 
 
 def output_relative(row: dict, visit: Visit, count: int) -> str:
-    eye = row["eye"] if row["eye"] in ("OD", "OS") else "eye_uncertain"
-    mod, phase = row["modality"], row["phase"]
-    if mod == "color":
-        category = "1_color"
-    elif mod == "autofluorescence":
-        category = "2_autofluorescence"
-    elif phase == "pre-dye":
-        category = "3_FA_pre-dye"
-    elif mod in ("FA", "FA-dark") and phase in ("early", "mid", "late"):
-        category = {"early": "4_FA_early", "mid": "5_FA_mid", "late": "6_FA_late"}[phase]
-        if row["phase_estimated"]:
-            category += "_estimated"
-    else:
-        category = "7_FA_unstaged" if mod in ("FA", "FA-dark") else "7_modality_uncertain"
-    sequence = f"{row['seq']:0{max(2, len(str(count)))}d}"
-    timer = "" if row["timer_s"] is None else f"_t{int(row['timer_s']):04d}s"
-    image_id = str(row["image_id"]) if row["image_id"] != "" else "unknown_" + row["image_key"][:8]
-    return f"{visit.output_dir}/{eye}/{category}/{sequence}{timer}_{image_id}.jpg"
+    member = PurePosixPath(row["member_path"])
+    duplicates = sum(PurePosixPath(info.filename).name.casefold() == member.name.casefold()
+                     for _, info in visit.members)
+    name = member.name
+    if duplicates > 1:
+        name = f"{member.stem}__member{row['member_index']}{member.suffix}"
+    return f"{visit.output_dir}/{name}"
 
 
 def update_review_queues(rows: list[dict], eyes: dict[str, dict], labels: dict[str, dict]) -> None:
@@ -678,31 +668,108 @@ def update_review_queues(rows: list[dict], eyes: dict[str, dict], labels: dict[s
                            "confirmed_timer_s": old.get("confirmed_timer_s", "")}
 
 
-def contact_sheet(path: Path, rows: list[dict], thumbs: list[Any]) -> None:
-    import cv2
-    from PIL import Image, ImageDraw, ImageFont
-    tile, label, cols = 220, 64, 6
-    sheet = Image.new("RGB", (cols * tile, math.ceil(len(rows) / cols) * (tile + label)), "#eeeeee")
-    draw = ImageDraw.Draw(sheet)
-    try:
-        font = ImageFont.truetype("DejaVuSans.ttf", 12)
-    except OSError:
-        font = ImageFont.load_default()
-    for index, (row, thumb) in enumerate(zip(rows, thumbs)):
-        x, y = index % cols * tile, index // cols * (tile + label)
-        if thumb is not None:
-            sheet.paste(Image.fromarray(cv2.cvtColor(thumb, cv2.COLOR_BGR2RGB)), (x, y + label))
-        else:
-            draw.rectangle((x, y + label, x + tile, y + label + tile), fill="#aaaaaa")
-        timer = "no clock" if row["timer_s"] is None else f"{row['timer_s']:.3f}s"
-        lines = [f"{row['seq']:02d} | {row['image_id']} | {row['eye']}",
-                 f"{row['modality']} | {row['phase']}",
-                 f"{timer} | {row['phase_source']}",
-                 f"coverage proxy: {row.get('coverage_score', '')}"]
-        for n, line in enumerate(lines):
-            draw.text((x + 4, y + n * 15), line, font=font, fill="#a02222" if row["flags"] else "#222222")
-    path.parent.mkdir(parents=True, exist_ok=True)
-    sheet.save(path, quality=82)
+# Each rule is a review category, not a diagnosis or a reason to discard a scan.
+REVIEW_RULES = {
+    "eye_unknown": ({"eye_uncertain"}, "The pipeline could not determine left or right eye.",
+                    "Check the image or source record; enter OD or OS in confirmed_eye if known."),
+    "modality_uncertain": ({"modality_ambiguous"}, "The image type is uncertain.",
+                           "Check whether this is color, autofluorescence, FA, or FA-dark; fill confirmed_modality if known."),
+    "phase_unknown": ({"phase_unresolved"}, "The FA stage could not be determined.",
+                      "Check the image, visit sequence and source record; fill confirmed_phase only if supported."),
+    "phase_estimated": ({"phase_estimated"}, "The FA stage was estimated without an accepted clock reading.",
+                        "Check the estimated stage; fill confirmed_phase if supported, otherwise leave blank."),
+    "timer_uncertain": ({"timer_ambiguous", "timer_unreadable", "timer_timeout", "timer_ocr_error", "timer_unavailable"},
+                        "The printed timer could not be read reliably, or OCR was unavailable.",
+                        "Check the timer on the original image; fill confirmed_timer_s in seconds if readable."),
+    "timer_missing": (set(), "No accepted timer value is available for this FA image.",
+                      "Check the original image or source record for elapsed seconds; do not invent a time from image order."),
+    "date_uncertain": ({"date_suspect", "date_unparsed"}, "The visit date may be wrong or could not be parsed.",
+                       "Check the clinic record; enter confirmed_date as YYYY-MM-DD. This applies to the whole visit."),
+    "sequence_uncertain": ({"suspected_reimport", "timer_order_conflict", "large_id_gap_order_unreliable", "atypical_eye_run_count", "multiple_archives_same_date"},
+                           "The visit sequence has a warning; this does not prove that this individual image is wrong.",
+                           "Check the source visit and image order before trusting order-based stage labels."),
+    "dark_images": ({"near_black", "dark_frame_after_fa"}, "The image is very dark or occurs after FA has already started.",
+                    "Check whether this is a usable scan, an expected dark frame, or an acquisition problem."),
+    "possible_obstruction": ({"coverage_proxy_high"}, "A brightness/texture heuristic suggests possible obstruction; it may be a false alarm.",
+                             "Inspect for eyelids or eyelashes hiding useful retina; decide whether the image is usable."),
+    "unusual_dimensions": ({"non_square_image"}, "The image is rectangular rather than square.",
+                           "Check whether the export is complete and suitable for the model; do not assume it is damaged."),
+    "unreadable_images": ({"decode_error"}, "The JPEG decoder could not read this image.",
+                          "Try the source export and obtain a readable replacement if necessary."),
+    "image_name_unusual": ({"non_numeric_image_name"}, "The original filename is not a numeric image ID.",
+                           "Check the source record before using filename order as capture order."),
+}
+SEQUENCE_PROBLEMS = {
+    "suspected_reimport": "The visit may contain re-imported images, so numeric IDs may not follow capture order.",
+    "timer_order_conflict": "Readable timers decrease when images are sorted by ID, so ID order conflicts with elapsed time.",
+    "large_id_gap_order_unreliable": "A very large gap between image IDs makes order-based stage inference unreliable.",
+    "atypical_eye_run_count": "The visit does not follow the expected six alternating eye groups used by the stage heuristic.",
+    "multiple_archives_same_date": "More than one source ZIP has the same patient and parsed visit date.",
+}
+REVIEW_COLS = ["image_path", "problem", "labeller_task", "patient", "visit", "eye", "modality", "phase",
+               "timer_s", "visit_date", "trigger_flags", "confirmed_eye", "confirmed_modality",
+               "confirmed_phase", "confirmed_timer_s", "confirmed_date", "image_key", "source_zip",
+               "source_zip_sha256", "member_path", "sha256"]
+
+
+def write_review_csvs(directory: Path, rows: list[dict]) -> dict[str, int]:
+    directory.mkdir(parents=True, exist_ok=True)
+    counts = {}
+    for category, (flags, problem, task) in REVIEW_RULES.items():
+        selected = []
+        for row in rows:
+            triggers = flags & row["flags"]
+            missing_timer = (category == "timer_missing" and row["modality"] in ("FA", "FA-dark")
+                             and row["timer_s"] in (None, ""))
+            unknown_modality = category == "modality_uncertain" and row["modality"] == "unknown"
+            if not (triggers or missing_timer or unknown_modality):
+                continue
+            selected.append({**{key: row.get(key, "") for key in REVIEW_COLS},
+                             "image_path": row["output_relpath"],
+                             "problem": " ".join(SEQUENCE_PROBLEMS[f] for f in sorted(triggers)) if category == "sequence_uncertain" else problem,
+                             "labeller_task": task,
+                             "visit": row["visit_raw"], "trigger_flags": ";".join(sorted(triggers))})
+        if selected:
+            write_csv(directory / (category + ".csv"), REVIEW_COLS, selected)
+            counts[category] = len(selected)
+    return counts
+
+
+def import_review(directory: Path, dates: dict, eyes: dict, labels: dict) -> dict[Path, str]:
+    hashes = {p: hash_file(p) for p in directory.glob("*.csv")}
+    decisions = {}
+    for path in sorted(hashes):
+        if path.stem not in REVIEW_RULES:
+            if path.name == "review_queue.csv":  # v1.0 report, not an editable form.
+                continue
+            raise PipelineError(f"Unexpected review CSV: {path}; retain it outside the generated dataset")
+        for key, row in read_corrections(path, "image_key", REVIEW_COLS).items():
+            for field in ("confirmed_eye", "confirmed_modality", "confirmed_phase", "confirmed_timer_s", "confirmed_date"):
+                value = row[field]
+                if not value:
+                    continue
+                ident = row["source_zip"] if field == "confirmed_date" else key
+                fingerprint = row["source_zip_sha256"] if field == "confirmed_date" else row["sha256"]
+                if not fingerprint:
+                    raise PipelineError(f"Missing correction fingerprint in {path}")
+                decision = (value, fingerprint)
+                if (ident, field) in decisions and decisions[ident, field] != decision:
+                    raise PipelineError(f"Conflicting review decisions for {ident}: {field}")
+                decisions[ident, field] = decision
+                if field == "confirmed_date":
+                    iso_date(value)
+                    dates[ident] = {**row, "confirmed": value, "original_date": row["visit_date"],
+                                    "suggested_date": value, "reason": "Reviewed in review/date_uncertain.csv"}
+                elif field == "confirmed_eye":
+                    eyes[key] = {**row, "confirmed": value, "suggested_eye": row["eye"], "reason": "Reviewed in review CSV"}
+                else:
+                    old = labels.get(key, {})
+                    # A fingerprint must bind every saved decision, including earlier fields.
+                    if old.get("sha256") not in (None, fingerprint) and any(old.get(c) for c in LABEL_COLS if c.startswith("confirmed_")):
+                        raise PipelineError(f"Image correction fingerprint is stale for {key}")
+                    labels[key] = {**{c: "" for c in LABEL_COLS}, **old,
+                                   **{c: row[c] for c in ("image_key", "source_zip", "member_path", "sha256")}, field: value}
+    return hashes
 
 
 def materialize_visit(staging: Path, visit: Visit, rows: list[dict]) -> None:
@@ -723,50 +790,24 @@ def materialize_visit(staging: Path, visit: Visit, rows: list[dict]) -> None:
                 raise PipelineError(f"Output checksum failed: {row['output_relpath']}")
 
 
-def write_review_html(staging: Path, rows: list[dict], visits: list[dict], sheets: bool) -> None:
-    def esc(value: Any) -> str:
-        return html.escape(str(value), quote=True)
-    cards = []
-    for visit in visits:
-        sheet = f"sheets/{visit['visit_key']}.jpg"
-        name = f"{visit['patient']} / {visit['visit_raw']}"
-        link = f'<a href="{esc(sheet)}">{esc(name)}</a>' if sheets else esc(name)
-        cards.append(f"<tr><td>{link}</td><td>{visit['image_count']}</td><td>{visit['readable_timers']}</td>"
-                     f"<td>{visit['uncertain_eyes']}</td><td>{visit['estimated_phases']}</td>"
-                     f"<td>{esc('; '.join(sorted(visit['flags'])))}</td></tr>")
-    flagged = []
-    for row in rows:
-        if row["flags"]:
-            flagged.append(f"<tr><td>{esc(row['patient'])}</td><td>{esc(row['visit_raw'])}</td>"
-                           f"<td>{esc(row['image_id'])}</td><td><code>{esc(row['image_key'])}</code></td>"
-                           f"<td>{esc('; '.join(sorted(row['flags'])))}</td></tr>")
-    page = """<!doctype html><meta charset="utf-8"><title>FA dataset review</title>
-<style>body{font:15px system-ui;margin:36px;max-width:1600px;color:#222}table{border-collapse:collapse;width:100%;margin:20px 0}td,th{border-bottom:1px solid #ddd;padding:9px;text-align:left}code{font-size:12px}input{font:inherit;padding:10px;width:60%}th{position:sticky;top:0;background:white}a{color:#2059a2}</style>
-<h1>FA dataset review</h1><p>The image labels and coverage proxy require review. A clock reading is OCR, not independently verified timing. Original JPEG bytes are preserved.</p>
-<p>Corrections belong in the separate corrections directory. The next run rebuilds this output. Frames with unreliable order and no readable clock remain unstaged.</p>
-<label>Filter rows <input id="filter" placeholder="Patient, visit, image key, or flag"></label>
-<h2>Visits</h2><table><thead><tr><th>Visit / contact sheet</th><th>Images</th><th>Clocks read</th><th>Uncertain eyes</th><th>Estimated phases</th><th>Flags</th></tr></thead><tbody>"""
-    page += "".join(cards) + "</tbody></table><h2>Flagged images</h2><table><thead><tr><th>Patient</th><th>Visit</th><th>Image ID</th><th>Correction key</th><th>Flags</th></tr></thead><tbody>"
-    page += "".join(flagged) + """</tbody></table><script>
-document.getElementById('filter').addEventListener('input',e=>{const q=e.target.value.toLowerCase();document.querySelectorAll('tbody tr').forEach(r=>r.hidden=!r.textContent.toLowerCase().includes(q));});
-</script>"""
-    (staging / "review").mkdir(exist_ok=True)
-    (staging / "review/index.html").write_text(page, encoding="utf-8")
-
-
-def promote(staging: Path, output: Path) -> None:
-    backup = output.with_name(output.name + ".previous-" + uuid.uuid4().hex[:8])
-    moved_old = False
+def promote(staging: Path, output: Path, records_staging: Path, records_output: Path) -> None:
+    backups, published = [], []
     try:
-        if output.exists():
-            os.replace(output, backup)
-            moved_old = True
-        os.replace(staging, output)
+        for fresh, destination in ((records_staging, records_output), (staging, output)):
+            backup = destination.with_name(destination.name + ".previous-" + uuid.uuid4().hex[:8])
+            if destination.exists():
+                os.replace(destination, backup)
+                backups.append((destination, backup))
+            os.replace(fresh, destination)
+            published.append(destination)
     except OSError:
-        if moved_old and not output.exists():
-            os.replace(backup, output)
+        # Restore the label table and images together if either promotion fails.
+        for destination in reversed(published):
+            shutil.rmtree(destination)
+        for destination, backup in reversed(backups):
+            os.replace(backup, destination)
         raise
-    if moved_old:
+    for _, backup in backups:
         try:
             shutil.rmtree(backup)
         except OSError:
@@ -774,7 +815,7 @@ def promote(staging: Path, output: Path) -> None:
 
 
 def run_pipeline(source: Path, output: Path, corrections: Path, settings: Settings,
-                 *, tables_only: bool = False, sheets: bool = True, allow_no_ocr: bool = False,
+                 *, tables_only: bool = False, sheets: bool = False, allow_no_ocr: bool = False,
                  max_visits: int | None = None) -> dict:
     start = time.monotonic()
     # Resolve parent paths while retaining the ability to reject a symlink leaf.
@@ -797,13 +838,14 @@ def run_pipeline(source: Path, output: Path, corrections: Path, settings: Settin
     dates = read_corrections(corrections / "date_corrections.csv", "source_zip", DATE_COLS)
     eyes = read_corrections(corrections / "eye_corrections.csv", "image_key", EYE_COLS)
     labels = read_corrections(corrections / "label_corrections.csv", "image_key", LABEL_COLS)
+    review_hashes = import_review(output / "review", dates, eyes, labels)
     validate_correction_values(eyes, labels, settings)
     expected_count = sum(len(v.members) for v in visits)
     image_bytes = sum(info.file_size for v in visits for _, info in v.members)
     output.parent.mkdir(parents=True, exist_ok=True)
-    # Conservative space budget includes review sheets and CSVs; old output is
+    # The space budget includes CSVs; old output is
     # deliberately left in place while a fresh complete output is assembled.
-    needed = (0 if tables_only else image_bytes) + (1_000_000 * len(visits) if sheets else 0) + settings.reserve_disk_bytes
+    needed = (0 if tables_only else image_bytes) + settings.reserve_disk_bytes
     free = shutil.disk_usage(output.parent).free
     if free < needed:
         raise PipelineError(f"Need approximately {needed / 1e9:.2f} GB free for this run; have {free / 1e9:.2f} GB. "
@@ -833,12 +875,12 @@ def run_pipeline(source: Path, output: Path, corrections: Path, settings: Settin
         visit_rows: list[dict] = []
         paths: set[str] = set()
         for number, visit in enumerate(visits, 1):
-            rows, thumbs = [], []
+            rows = []
             previous_id = None
             with zipfile.ZipFile(visit.path) as z:
                 for sequence, (member_index, info) in enumerate(visit.members, 1):
                     payload = z.read(info)  # ZipFile also verifies the original CRC.
-                    features, thumb = analyze_image(payload, settings, tesseract)
+                    features, _ = analyze_image(payload, settings, tesseract)
                     stem = PurePosixPath(info.filename).stem
                     image_id = int(stem) if stem.isdigit() else ""
                     key = hashlib.sha256(f"{visit.source}\0{member_index}\0{info.filename}".encode()).hexdigest()[:24]
@@ -858,20 +900,16 @@ def run_pipeline(source: Path, output: Path, corrections: Path, settings: Settin
                     previous_id = image_id if image_id != "" else None
                     apply_image_corrections(row, eyes, labels)
                     rows.append(row)
-                    if sheets:
-                        thumbs.append(thumb)
             resolve_dark_frames(rows)
             run_count = assign_phases(rows, visit, settings, labels)
             update_review_queues(rows, eyes, labels)
             for row in rows:
                 row["output_relpath"] = output_relative(row, visit, len(rows))
-                if row["output_relpath"] in paths:
+                if row["output_relpath"].casefold() in paths:
                     raise PipelineError(f"Output name collision: {row['output_relpath']}")
-                paths.add(row["output_relpath"])
+                paths.add(row["output_relpath"].casefold())
             if not tables_only:
                 materialize_visit(staging, visit, rows)
-            if sheets:
-                contact_sheet(staging / "review/sheets" / (visit.key + ".jpg"), rows, thumbs)
             if hash_file(visit.path) != visit.sha256:
                 raise PipelineError(f"Input ZIP changed during the run: {visit.source}")
             all_rows.extend(rows)
@@ -891,16 +929,15 @@ def run_pipeline(source: Path, output: Path, corrections: Path, settings: Settin
                   f"{visit_rows[-1]['readable_timers']} clocks; {visit_rows[-1]['uncertain_eyes']} uncertain eyes", flush=True)
         if len(all_rows) != expected_count:
             raise PipelineError("Image count mismatch; refusing to publish an incomplete output")
-        if not tables_only and len(list(staging.glob("Patient */**/*.jpg"))) != expected_count:
+        if not tables_only and sum(p.is_file() for p in staging.rglob("*") if p.suffix.lower() in (".jpg", ".jpeg")) != expected_count:
             raise PipelineError("Output file count mismatch")
-        write_csv(staging / "fa_images.csv", IMAGE_COLS, all_rows)
-        write_csv(staging / "fa_visits.csv", VISIT_COLS, visit_rows)
-        review_rows = [r for r in all_rows if r["flags"]]
-        write_csv(staging / "review/review_queue.csv", IMAGE_COLS, review_rows)
-        write_review_html(staging, all_rows, visit_rows, sheets)
+        records_staging = staging / "_run_records"
+        write_csv(records_staging / "fa_images.csv", IMAGE_COLS, all_rows)
+        write_csv(records_staging / "fa_visits.csv", VISIT_COLS, visit_rows)
+        review_counts = write_review_csvs(staging / "review", all_rows)
         summary = {
             "pipeline_version": VERSION, "created_at_utc": dt.datetime.now(dt.timezone.utc).isoformat(),
-            "input_root": str(source), "output_root": str(output), "corrections_root": str(corrections),
+            "input_root": str(source), "output_root": str(output), "records_root": str(corrections), "review_categories": review_counts,
             "mode": "tables-only" if tables_only else "full", "partial_run": max_visits is not None,
             "patients": len({v.patient for v in visits}), "visits": len(visits), "images": len(all_rows),
             "source_image_bytes": image_bytes, "images_materialized": not tables_only,
@@ -918,25 +955,20 @@ def run_pipeline(source: Path, output: Path, corrections: Path, settings: Settin
                             "The coverage score is a brightness/texture proxy, not measured eyelid area",
                             "The timing boundaries are provisional user-selected settings"],
         }
-        (staging / "run_summary.json").write_text(json.dumps(summary, indent=2) + "\n")
-        (staging / MARKER).write_text(json.dumps({"owner": OWNER, "input_root": str(source), "version": VERSION}))
-        (staging / "README.txt").write_text(
-            "ALL_FA_REVISED is generated by fa_pipeline.py.\n"
-            "The fa_images.csv table defines the layout. JPEG copies retain original bytes.\n"
-            "Files must not be moved or renamed manually. Corrections live at:\n" + str(corrections) + "\n"
-            "A rerun relabels everything and replaces this managed output.\n"
-            "The review/index.html page links to the visit contact sheets.\n"
-            "The labels and coverage proxy require review; run_summary.json records limitations.\n"
-            + ("This is a TABLES-ONLY run. Image paths are planned; JPEG copies are absent.\n" if tables_only else "")
-        )
+        (records_staging / "run_summary.json").write_text(json.dumps(summary, indent=2) + "\n")
+        (records_staging / MARKER).write_text(json.dumps({
+            "owner": OWNER, "input_root": str(source), "output_root": str(output), "version": VERSION}))
         # Preserve all earlier rows, including corrections for archives outside this sample.
-        for path, original_hash in correction_hashes.items():
+        current_review = {p for p in (output / "review").glob("*.csv")}
+        if current_review != set(review_hashes):
+            raise PipelineError("Review files changed during the run; your edits are preserved")
+        for path, original_hash in {**correction_hashes, **review_hashes}.items():
             if (hash_file(path) if path.exists() else None) != original_hash:
                 raise PipelineError(f"Corrections changed during the run: {path}. Your edits are preserved; rerun to apply them")
         atomic_csv(corrections / "date_corrections.csv", DATE_COLS, dates)
         atomic_csv(corrections / "eye_corrections.csv", EYE_COLS, eyes)
         atomic_csv(corrections / "label_corrections.csv", LABEL_COLS, labels)
-        promote(staging, output)
+        promote(staging, output, records_staging, corrections / "run")
         staging = None
         print(f"Complete: {len(all_rows)} images; output {output}", flush=True)
         return summary
@@ -952,9 +984,10 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("input", type=Path, help="Local folder containing Patient N directories and visit ZIPs")
     parser.add_argument("--output", type=Path, required=True, help="Generated ALL_FA_REVISED directory")
     parser.add_argument("--settings", type=Path, help="JSON overrides; built-in defaults work without this file")
-    parser.add_argument("--corrections", type=Path, help="Persistent CSV directory; default: <output>.corrections")
+    parser.add_argument("--corrections", type=Path, help="Legacy alias for --records", dest="records")
+    parser.add_argument("--records", type=Path, help="Run records outside the dataset; default: <output>.records")
     parser.add_argument("--tables-only", action="store_true", help="Analyze every image but do not copy JPEGs")
-    parser.add_argument("--no-sheets", action="store_true", help="Skip the JPEG contact sheets")
+    parser.add_argument("--no-sheets", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--allow-no-ocr", action="store_true", help="Explicitly allow missing Tesseract")
     parser.add_argument("--max-visits", type=int, help="Smoke-test only the first N sorted visits; recorded as partial")
     parser.add_argument("--version", action="version", version=VERSION)
@@ -965,9 +998,12 @@ def main(argv: list[str] | None = None) -> int:
         from PIL import Image  # noqa: F401
         cv2.setNumThreads(1)
         settings = load_settings(args.settings)
-        corrections = args.corrections or args.output.with_name(args.output.name + ".corrections")
+        corrections = args.records or args.output.with_name(args.output.name + ".records")
+        legacy = args.output.with_name(args.output.name + ".corrections")
+        if not args.records and not corrections.exists() and legacy.exists():
+            raise PipelineError(f"Existing corrections found at {legacy}; pass --records {legacy} to preserve them")
         run_pipeline(args.input, args.output, corrections, settings, tables_only=args.tables_only,
-                     sheets=not args.no_sheets, allow_no_ocr=args.allow_no_ocr, max_visits=args.max_visits)
+                     allow_no_ocr=args.allow_no_ocr, max_visits=args.max_visits)
         return 0
     except ImportError as e:
         print(f"Missing dependency: {e}. Install requirements.txt with this Python interpreter", file=sys.stderr)

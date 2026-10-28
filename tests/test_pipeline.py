@@ -126,10 +126,10 @@ class RulesTests(unittest.TestCase):
     def test_reviewed_timer_overrides_darkness_phase(self):
         visit = self.visit()
         visit.output_dir = "Patient 13/2021-05-04"
-        row = dict(fake_fa("a", timer=600.123), modality="FA-dark", timer_status="manual", seq=1, image_id=123)
+        row = dict(fake_fa("a", timer=600.123), modality="FA-dark", timer_status="manual", seq=1, image_id=123, member_path="123.jpg")
         fa.assign_phases([row], visit, fa.Settings(), {})
         self.assertEqual(row["phase"], "late")
-        self.assertIn("/6_FA_late/", fa.output_relative(row, visit, 1))
+        self.assertEqual(fa.output_relative(row, visit, 1), "Patient 13/2021-05-04/123.jpg")
 
     def test_ocr_disagreement_is_not_accepted_as_measured_time(self):
         import cv2
@@ -168,7 +168,7 @@ class IntegrationTests(unittest.TestCase):
         original = archive(self.source, entries=[("123.jpg", payload), ("124.jpg", payload)])
         zip_hash = fa.hash_file(original)
         summary = self.run_pipeline()
-        rows = csv_rows(self.output / "fa_images.csv")
+        rows = csv_rows(self.corrections / "run/fa_images.csv")
         self.assertEqual(summary["images"], 2)
         self.assertEqual(rows[0]["date_status"], "suspect")
         self.assertEqual(len(list(self.output.glob("Patient */**/*.jpg"))), 2)
@@ -181,27 +181,114 @@ class IntegrationTests(unittest.TestCase):
         fa.write_csv(self.corrections / "eye_corrections.csv", fa.EYE_COLS, eyes)
         old_paths = {r["output_relpath"] for r in rows}
         self.run_pipeline()
-        rows = csv_rows(self.output / "fa_images.csv")
+        rows = csv_rows(self.corrections / "run/fa_images.csv")
         self.assertTrue(all(r["visit_date"] == "2021-08-31" for r in rows))
-        self.assertTrue(all(not (self.output / p).exists() for p in old_paths))
+        self.assertEqual(old_paths, {r["output_relpath"] for r in rows})
         confirmed = next(r for r in rows if r["image_key"] == eyes[0]["image_key"])
         self.assertEqual(confirmed["eye_source"], "manual")
-        self.assertIn("/OS/", confirmed["output_relpath"])
+        self.assertEqual(confirmed["eye"], "OS")
         self.assertEqual(fa.hash_file(original), zip_hash)
         self.assertFalse(list(self.base.glob(".revised.building-*")))
+
+    def test_dataset_contains_only_original_images_and_category_csvs(self):
+        archive(self.source, patient="Patient 12 No Timestamp", entries=[("123.JPEG", jpeg())])
+        self.run_pipeline()
+        files = [p.relative_to(self.output).as_posix() for p in self.output.rglob("*") if p.is_file()]
+        self.assertIn("Patient 12 No Timestamp/2021.8.13/123.JPEG", files)
+        self.assertTrue(all(p == "Patient 12 No Timestamp/2021.8.13/123.JPEG"
+                            or p.startswith("review/") and p.endswith(".csv") for p in files))
+        for path in (self.output / "review").glob("*.csv"):
+            for row in csv_rows(path):
+                self.assertTrue((self.output / row["image_path"]).is_file())
+                self.assertTrue(row["problem"] and row["labeller_task"])
+
+    def test_review_csv_decisions_apply_and_persist_after_resolved_rows_disappear(self):
+        archive(self.source)
+        self.run_pipeline()
+        path = self.output / "review/eye_unknown.csv"
+        rows = csv_rows(path)
+        rows[0]["confirmed_eye"] = "OS"
+        rows[0]["confirmed_date"] = "2021-08-31"
+        fa.write_csv(path, fa.REVIEW_COLS, rows)
+        self.run_pipeline()
+        self.assertFalse(path.exists())
+        self.run_pipeline()
+        row = csv_rows(self.corrections / "run/fa_images.csv")[0]
+        self.assertEqual((row["eye"], row["eye_source"], row["visit_date"]), ("OS", "manual", "2021-08-31"))
+        self.assertEqual(row["output_relpath"], "Patient 55/2021.8.13/123.jpg")
+
+    def test_review_decision_rejects_changed_image_bytes(self):
+        archive(self.source)
+        self.run_pipeline()
+        path = self.output / "review/eye_unknown.csv"
+        rows = csv_rows(path)
+        rows[0]["confirmed_eye"] = "OS"
+        fa.write_csv(path, fa.REVIEW_COLS, rows)
+        archive(self.source, entries=[("123.jpg", jpeg((10, 80, 90)))])
+        with self.assertRaisesRegex(fa.PipelineError, "fingerprint is stale"):
+            self.run_pipeline()
+        self.assertEqual(csv_rows(path)[0]["confirmed_eye"], "OS")
+
+    def test_conflicting_review_decisions_do_not_replace_output(self):
+        archive(self.source)
+        self.run_pipeline()
+        before = (self.corrections / "run/fa_images.csv").read_bytes()
+        for category, value in [("eye_unknown", "OS"), ("date_uncertain", "OD")]:
+            path = self.output / "review" / (category + ".csv")
+            rows = csv_rows(path)
+            rows[0]["confirmed_eye"] = value
+            fa.write_csv(path, fa.REVIEW_COLS, rows)
+        with self.assertRaisesRegex(fa.PipelineError, "Conflicting review"):
+            self.run_pipeline()
+        self.assertEqual(before, (self.corrections / "run/fa_images.csv").read_bytes())
+
+    def test_review_edit_during_run_is_preserved(self):
+        archive(self.source)
+        self.run_pipeline()
+        path = self.output / "review/eye_unknown.csv"
+        original = fa.analyze_image
+        def edit(*args):
+            result = original(*args)
+            rows = csv_rows(path)
+            rows[0]["confirmed_eye"] = "OS"
+            fa.write_csv(path, fa.REVIEW_COLS, rows)
+            return result
+        with patch.object(fa, "analyze_image", side_effect=edit):
+            with self.assertRaisesRegex(fa.PipelineError, "Corrections changed during the run"):
+                self.run_pipeline()
+        self.assertEqual(csv_rows(path)[0]["confirmed_eye"], "OS")
 
     def test_failed_run_retains_completed_output_and_corrections(self):
         archive(self.source)
         self.run_pipeline()
-        before = (self.output / "fa_images.csv").read_bytes()
+        before = (self.corrections / "run/fa_images.csv").read_bytes()
         queue = (self.corrections / "eye_corrections.csv").read_bytes()
         with patch.object(fa, "analyze_image", side_effect=fa.PipelineError("simulated failure")):
             with self.assertRaises(fa.PipelineError):
                 self.run_pipeline()
-        self.assertEqual((self.output / "fa_images.csv").read_bytes(), before)
+        self.assertEqual((self.corrections / "run/fa_images.csv").read_bytes(), before)
         self.assertEqual((self.corrections / "eye_corrections.csv").read_bytes(), queue)
         self.assertFalse(list(self.base.glob(".revised.building-*")))
         self.assertFalse(self.output.with_name("revised.pipeline.lock").exists())
+
+    def test_promotion_failure_restores_images_and_label_table_together(self):
+        archive(self.source)
+        self.run_pipeline()
+        table = self.corrections / "run/fa_images.csv"
+        before = table.read_bytes()
+        image = self.output / csv_rows(table)[0]["output_relpath"]
+        payload = image.read_bytes()
+        archive(self.source, entries=[("123.jpg", jpeg((20, 70, 90)))])
+        replace = fa.os.replace
+        def fail_image_promotion(src, dst):
+            if Path(src).name.startswith(".revised.building-") and Path(dst) == self.output.resolve():
+                raise OSError("simulated promotion failure")
+            return replace(src, dst)
+        with patch.object(fa.os, "replace", side_effect=fail_image_promotion):
+            with self.assertRaisesRegex(OSError, "simulated promotion failure"):
+                self.run_pipeline()
+        self.assertEqual(table.read_bytes(), before)
+        self.assertEqual(image.read_bytes(), payload)
 
     def test_duplicate_member_names_and_same_day_archives_keep_every_frame(self):
         with warnings.catch_warnings():
@@ -209,17 +296,18 @@ class IntegrationTests(unittest.TestCase):
             archive(self.source, name="2024.6.4.zip", entries=[("123.jpg", jpeg()), ("123.jpg", jpeg((20, 50, 120)))])
         archive(self.source, name="2024.6.4 (2).zip")
         self.run_pipeline()
-        rows = csv_rows(self.output / "fa_images.csv")
+        rows = csv_rows(self.corrections / "run/fa_images.csv")
         self.assertEqual(len(rows), 3)
         self.assertEqual(len({r["image_key"] for r in rows}), 3)
         self.assertEqual(len({r["output_relpath"] for r in rows}), 3)
-        self.assertTrue(all("__v" in r["output_relpath"] for r in rows))
+        self.assertEqual({str(Path(r["output_relpath"]).parent) for r in rows},
+                         {"Patient 55/2024.6.4", "Patient 55/2024.6.4 (2)"})
 
     def test_undecodable_jpeg_payload_is_kept(self):
         payload = b"this is not a valid JPEG"
         archive(self.source, entries=[("123.jpg", payload)])
         self.run_pipeline()
-        row = csv_rows(self.output / "fa_images.csv")[0]
+        row = csv_rows(self.corrections / "run/fa_images.csv")[0]
         self.assertEqual(row["modality"], "unknown")
         self.assertIn("decode_error", row["flags"])
         self.assertEqual((self.output / row["output_relpath"]).read_bytes(), payload)
@@ -228,7 +316,7 @@ class IntegrationTests(unittest.TestCase):
         archive(self.source)
         summary = self.run_pipeline(tables_only=True)
         self.assertFalse(summary["images_materialized"])
-        self.assertEqual(csv_rows(self.output / "fa_images.csv")[0]["images_materialized"], "false")
+        self.assertEqual(csv_rows(self.corrections / "run/fa_images.csv")[0]["images_materialized"], "false")
         self.assertFalse(list(self.output.glob("Patient */**/*.jpg")))
 
     def test_source_and_output_overlap_is_rejected(self):
@@ -253,9 +341,9 @@ class IntegrationTests(unittest.TestCase):
     def test_unparsed_date_can_be_reviewed_without_guessing(self):
         archive(self.source, name="unknown.zip")
         self.run_pipeline()
-        row = csv_rows(self.output / "fa_images.csv")[0]
+        row = csv_rows(self.corrections / "run/fa_images.csv")[0]
         self.assertEqual(row["visit_date"], "")
-        self.assertIn("date_unknown", row["output_relpath"])
+        self.assertEqual(row["output_relpath"], "Patient 55/unknown/123.jpg")
         self.assertEqual(csv_rows(self.corrections / "date_corrections.csv")[0]["suggested_date"], "")
 
     def test_stale_confirmed_date_is_rejected_after_source_changes(self):
@@ -277,7 +365,7 @@ class IntegrationTests(unittest.TestCase):
     def test_human_edits_during_run_are_not_overwritten(self):
         archive(self.source)
         self.run_pipeline()
-        prior_table = (self.output / "fa_images.csv").read_bytes()
+        prior_table = (self.corrections / "run/fa_images.csv").read_bytes()
         original_analyze = fa.analyze_image
         def edit_during_analysis(*args):
             result = original_analyze(*args)
@@ -290,7 +378,7 @@ class IntegrationTests(unittest.TestCase):
             with self.assertRaisesRegex(fa.PipelineError, "Corrections changed during the run"):
                 self.run_pipeline()
         self.assertEqual(csv_rows(self.corrections / "date_corrections.csv")[0]["confirmed"], "2021-08-31")
-        self.assertEqual((self.output / "fa_images.csv").read_bytes(), prior_table)
+        self.assertEqual((self.corrections / "run/fa_images.csv").read_bytes(), prior_table)
 
     def test_shared_corrections_lock_blocks_a_second_writer(self):
         archive(self.source)
