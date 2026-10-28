@@ -46,6 +46,9 @@ def fake_fa(key, eye="OD", timer=None):
 class RulesTests(unittest.TestCase):
     def test_date_variants_and_invalid_dates(self):
         cases = {"2024.10.8.zip": "2024-10-08", "2024-11.12.zip": "2024-11-12",
+                 "12.3.2024.zip": "2024-12-03", "12.3.2024 note.zip": "2024-12-03",
+                 "12.3.1999.zip": "1999-12-03",
+                 "12.3.20245.zip": "", "12.32.2024.zip": "",
                  "5.4.21.zip": "2021-05-04", "3.29.22 I changed the date.zip": "2022-03-29",
                  "2024.6.4 (2).zip": "2024-06-04", "2024.2.31.zip": "", "2024.2.311.zip": ""}
         for value, expected in cases.items():

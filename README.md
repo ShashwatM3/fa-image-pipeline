@@ -6,6 +6,8 @@
 
 [Sample 2](samples/sample2/README.md) contains browsable baseline tables, correction files, and an explanation of pipeline performance. Its full raw images and processed output are downloadable from the [Sample 2 baseline release](https://github.com/ShashwatM3/fa-image-pipeline/releases/tag/sample2-baseline-v1.0.0). The sample README explains how to download and unpack them.
 
+Version 1.0.1 also accepts explicit month.day.four-digit-year visit names, such as `12.3.2024.zip`. This format appeared in the added Patient 300 data. The image-labeling rules and settings remain the same as version 1.0.0; the original sample release preserves that baseline version.
+
 ## Running the pipeline
 
 The supported input is a directory containing `Patient N/<visit date>.zip`, including the extra directory around Patient 11's September 2021 ZIP. Patient directory notes such as `Patient 12 No Timestamp` are retained in the table, while output directories use `Patient 12`. The input ZIPs stay zipped and remain unchanged.
@@ -85,7 +87,7 @@ Fingerprint fields must remain intact. A confirmed correction is rejected if its
 
 ## Labeling rules and limits
 
-The date parser accepts year-first dotted, dashed, and mixed names, month.day.two-digit-year names, and trailing annotations. The original spelling always remains available. Numeric image IDs define the processing order within a visit, but they are database identifiers, not elapsed time measurements. The script does not extrapolate capture dates or elapsed seconds from them.
+The date parser accepts year-first dotted, dashed, and mixed names, month.day.year names with two- or four-digit years, and trailing annotations. The original spelling always remains available. Numeric image IDs define the processing order within a visit, but they are database identifiers, not elapsed time measurements. The script does not extrapolate capture dates or elapsed seconds from them.
 
 The modality heuristic uses color-channel differences and the polarity of vessel contrast. A recognizable dye clock takes precedence over vessel polarity, because early FA vessels may still be dark. A dark frame after an established FA sequence does not become pre-dye just because its clock is unreadable. The laterality heuristic uses the horizontal position of a vessel-density peak near the optic disc. Ambiguous disc localization remains unresolved; neighboring confident eyes can supply a review suggestion but do not automatically turn that suggestion into a confirmed eye. These are image-based heuristics developed on a small initial sample, and they require human review.
 

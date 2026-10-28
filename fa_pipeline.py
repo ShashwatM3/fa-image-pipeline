@@ -29,7 +29,7 @@ from typing import Any
 import uuid
 import zipfile
 
-VERSION = "1.0.0"
+VERSION = "1.0.1"
 OWNER = "all-fa-pipeline-v1"
 MARKER = ".fa_pipeline.json"
 
@@ -149,11 +149,12 @@ def parse_date(name: str) -> tuple[str, str]:
     if m:
         year, month, day = map(int, m.groups())
     else:
-        m = re.match(r"^(\d{1,2})[.-](\d{1,2})[.-](\d{2})(?!\d)", base)
+        m = re.match(r"^(\d{1,2})[.-](\d{1,2})[.-](\d{4}|\d{2})(?!\d)", base)
         if not m:
             return "", "unparsed date: " + base
         month, day, year = map(int, m.groups())
-        year += 2000
+        if len(m.group(3)) == 2:
+            year += 2000
     try:
         return dt.date(year, month, day).isoformat(), base[m.end():].strip()
     except ValueError:
