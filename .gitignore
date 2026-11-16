@@ -5,3 +5,11 @@ __pycache__/
 samples/sample2/data/
 *.tar
 *.tar.gz
+
+# Private experiments; the published normalizer lives in pipelines/fa-normalization/.
+/analysis/
+/PLAN.md
+/fa_normalize.py
+/tests/test_normalize.py
+/outputs/
+/datasets/
